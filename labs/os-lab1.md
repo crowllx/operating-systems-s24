@@ -1,6 +1,9 @@
 Winston Shine
+
 Operating Systems
+
 Lab 1
+
 4/2/2024
 
 ```
@@ -63,7 +66,7 @@ Lab 1
 	+ loops n times incrementing a counter (global variable shared by both threads)
 - prints final counter to stdout
 
-the expected output should be 2*n
+the expected output should be `2*n`
 in reality with higher input the number is smaller because the
 program is not using mutex locks when changing the value of counter.
 
@@ -72,5 +75,8 @@ This output appears correct with small inputs only because thread 1 finishes it'
 before thread 2 can even start
 
 ##### io
-
+- opens a file '/tmp/file'
+- writes 'hello world\n' to a buffer
+- writes the contents of that buffer to the opened file
+- not sure what fsync does, but the last statement closes the file
 
