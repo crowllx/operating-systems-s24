@@ -6,6 +6,9 @@ Lab 1
 
 4/2/2024
 
+I worked mostly solo on this lab, but I did discuss with Dominic about what was
+going on in threads.c and why the input was correct with a smaller integer input
+
 ```
     1  ls
     2  git clone https://github.com/remzi-arpacidusseau/ostep-code.git
