@@ -116,9 +116,12 @@ int main(int argc, char *argv[]) {
             i++;
         }
         execute(cmds[cmds_count - 1], &prev_pfd);
+        if (prev_pfd != STDIN_FILENO) {
+            printf("PREV closed\n");
+            close(prev_pfd);
+        }
         free(tokens); // can i do this without re mallocing/freeing each loop?
     }
-
 
     return 0;
 }
