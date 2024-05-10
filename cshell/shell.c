@@ -116,6 +116,7 @@ int main(int argc, char *argv[]) {
             i++;
         }
         execute(cmds[cmds_count - 1], &prev_pfd);
+        free(tokens); // can i do this without re mallocing/freeing each loop?
     }
 
     return 0;
