@@ -119,5 +119,6 @@ int main(int argc, char *argv[]) {
         free(tokens); // can i do this without re mallocing/freeing each loop?
     }
 
+
     return 0;
 }
