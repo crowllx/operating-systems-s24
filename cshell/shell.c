@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -35,34 +36,52 @@ enum Operator check_ops(char *token) {
         return STDOUT;
     }
 }
-int execute_cmd(char *argv[], enum Operator flag, int *fd, char *fp) {
 
-    int status = 0;
-    printf("cmd: %s\narg: %s\n op: %d", argv[0], argv[1], flag);
-    printf("%p\n", argv);
+void execute_piped(char *argv[], int *prev_pfd) {
+    int pfds[2];
+
+    if (pipe(pfds) < 0) {
+        perror("pipe failed");
+        exit(-1);
+    }
     pid_t pid = fork();
+
     if (pid < 0) {
-        perror("Failed to fork\n");
+        perror("fork failed");
+        exit(-1);
     } else if (pid == 0) {
-        if (flag == PIPE) {
-            dup2(fd[1], 1);
+        if (prev_pfd != STDIN_FILENO) {
+            dup2(*prev_pfd, STDIN_FILENO); // previous pipe -> stdin
+            close(*prev_pfd);
         }
-        close(fd[1]);
-        dup2(fd[0], 0);
-        close(fd[0]);
-        if (execvp(argv[0], argv) < 0) {
-            printf("\nFailed to execute command.\n");
-            exit(-1);
+        dup2(pfds[1], STDOUT_FILENO); // stdout -> new pipe
+        close(pfds[1]);
+        close(pfds[0]);
+
+        execvp(argv[0], argv);
+        perror("execvp error");
+        exit(-1);
+    } else {
+        close(pfds[1]);
+        *prev_pfd = pfds[0]; // save read end;
+    }
+}
+void execute(char *argv[], int *prev_pfd) {
+    pid_t pid = fork();
+    printf("%d\n", pid);
+    if (pid == 0) {
+        if (prev_pfd != STDIN_FILENO) {
+            dup2(*prev_pfd, STDIN_FILENO); // previous pipe -> stdin
+            close(*prev_pfd);
         }
-        fflush(stdout);
+        execvp(argv[0], argv);
+        perror("execvp err");
         exit(0);
     } else {
-        close(fd[1]);
         wait(NULL);
     }
-
-    return status;
 }
+
 int main(int argc, char *argv[]) {
     char buf[80];
 
@@ -73,31 +92,30 @@ int main(int argc, char *argv[]) {
         char **tokens = tokenize(line, &tok_count);
         enum Operator op = STDOUT;
         size_t token_idx = 0;
-        char *file_path;
-        int status;
-        char **cmd = tokens;
-        int fd[2];
+        int prev_pfd, pfd[2];
+        char **cmds[20];
+        cmds[0] = tokens;
+        int cmds_count = 1;
 
-        if (pipe(fd) < 0) {
-            printf("failed to create pipe\n");
-            return -1;
-        }
+        // break commands in to null terminated lists of arguments
         while (token_idx < tok_count) {
             printf("token: %s\n", tokens[token_idx]);
             op = check_ops(tokens[token_idx]);
-            if (op != STDOUT && token_idx < tok_count - 1) {
+            if (op != STDOUT) {
                 tokens[token_idx] = NULL;
-                file_path = tokens[token_idx + 1];
-                status = execute_cmd(cmd, op, fd, file_path);
-                printf("%d\n", status);
-                printf("%s\n", tokens[token_idx + 1]);
-                cmd = &tokens[token_idx + 1];
+                cmds[cmds_count] = &tokens[token_idx + 1];
+                cmds_count++;
             }
             token_idx++;
         }
-        status = execute_cmd(cmd, op, fd, file_path);
-        close(fd[0]);
-        cmd++;
+
+        // execute commands
+        size_t i = 0;
+        while (i < cmds_count - 1) {
+            execute_piped(cmds[i], &prev_pfd);
+            i++;
+        }
+        execute(cmds[cmds_count - 1], &prev_pfd);
     }
 
     return 0;
