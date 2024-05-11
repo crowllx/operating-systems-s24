@@ -10,135 +10,125 @@
 // Winston Shine
 // Operating Systems
 
-#define DELIMS " \t\n\a\r"
 #define prompt_color "\x1b[35m"
 #define bold "\x1b[1m"
 #define color_end "\x1b[0m"
 
-enum Operator { NONE, STDOUT, REDIRECT_STDIN, REDIRECT_STDOUT, PIPE };
+#define DELIMS " \t\n\a\r"
+#define MAX_CMDS 10
+#define MAX_TOKENS 20
+
+enum Op { EXEC, PIPE, AND, OR };
+struct Command {
+    char **args;
+    int op;
+    int status;
+    pid_t pid;
+    char *file_in;
+    char *file_out;
+    int outfile_mode;
+};
 
 void prompt() { printf(prompt_color bold "\n> " color_end); }
 
-// break given command in to null terminated lists of strings split on
-// whitespace
-char **tokenize(char *line, size_t *count) {
-    char **tokens = malloc(sizeof(char *) * 20);
+void print_cmd(struct Command cmd) {
+    printf("argv: ");
+    size_t i = 0;
+    while (cmd.args[i] != NULL) {
+        printf("%s ", cmd.args[i]);
+        i++;
+    }
+    printf("\nop: %d\n", cmd.op);
+    printf("append: %d\n", cmd.outfile_mode);
+    printf("file in: %s\n", cmd.file_in);
+    printf("file out: %s\n", cmd.file_out);
+    printf("pid: %d\n", cmd.pid);
+}
 
+void parse_commands(char *line, size_t *count, struct Command *cmds) {
     char *tok = strtok(line, DELIMS);
-
-    while (tok != NULL && *count < 20) {
-        tokens[*count] = tok;
+    while (*count < MAX_CMDS && tok != NULL) {
+        char **args = malloc(sizeof(char *) * MAX_TOKENS);
+        cmds[*count].args = args;
+        cmds[*count].file_out = NULL;
+        cmds[*count].file_in = NULL;
+        cmds[*count].op = EXEC;
+        cmds[*count].outfile_mode = 0;
+        cmds[*count].pid = 0;
+        size_t i = 0;
+        while (tok != NULL && i < MAX_TOKENS) {
+            args[i] = tok;
+            if (strcmp(tok, "|") == 0) {
+                args[i] = NULL;
+                cmds[*count].op = PIPE;
+                tok = strtok(NULL, DELIMS);
+                break;
+            } else if (strcmp(tok, "<") == 0) {
+                args[i] = NULL;
+                cmds[*count].file_in = strtok(NULL, DELIMS);
+            } else if (strcmp(tok, ">") == 0) {
+                args[i] = NULL;
+                cmds[*count].file_out = strtok(NULL, DELIMS);
+                cmds[*count].outfile_mode = O_WRONLY | O_TRUNC | O_CREAT;
+            } else if (strcmp(tok, ">>") == 0) {
+                args[i] = NULL;
+                cmds[*count].file_out = strtok(NULL, DELIMS);
+                cmds[*count].outfile_mode = O_WRONLY | O_APPEND | O_CREAT;
+            }
+            i++;
+            tok = strtok(NULL, DELIMS);
+        }
         (*count)++;
-        tok = strtok(NULL, DELIMS);
-    }
-    tokens[*count] = NULL;
-    return tokens;
-}
-
-enum Operator check_ops(char *token) {
-    if (strcmp(token, "|") == 0) {
-        return PIPE;
-    } else if (strcmp(token, "<") == 0) {
-        return REDIRECT_STDIN;
-    } else if (strcmp(token, ">") == 0) {
-        return REDIRECT_STDOUT;
-    } else {
-        return STDOUT;
     }
 }
-
-// execute a command and redirect its stdout to a pipe
-int execute_piped(char *argv[], int *prev_pfd) {
-    int pfds[2];
-    printf("*** PIPED ***\n");
-    int status;
-    if (pipe(pfds) < 0) {
-        perror("pipe failed");
-        exit(-1);
+void exec_cmd(struct Command cmd, int *prev_pfd, int pfds[2]) {
+    int retval = pipe(pfds);
+    if (retval < 0) {
+        perror("pipe error");
+        exit(0);
     }
+    /* printf("new pipe fds: %d, %d\n\n", pfds[0], pfds[1]); */
+
     pid_t pid = fork();
-
     if (pid < 0) {
         perror("fork failed");
-        exit(-1);
+        exit(0);
     } else if (pid == 0) {
-        if (prev_pfd != STDIN_FILENO) {
-            dup2(*prev_pfd, STDIN_FILENO); // previous pipe -> stdin
+        // redirect STDIN, either from file or from previous commands pipe
+        if (cmd.file_in != NULL) {
+            int fd = open(cmd.file_in, O_RDONLY);
+            dup2(fd, STDIN_FILENO);
+            close(fd);
+        } else if (*prev_pfd != STDIN_FILENO) {
+            dup2(*prev_pfd, STDIN_FILENO);
             close(*prev_pfd);
         }
-        dup2(pfds[1], STDOUT_FILENO); // stdout -> new pipe
-        close(pfds[1]);
-        close(pfds[0]);
 
-        execvp(argv[0], argv);
-        perror("execvp error");
-        exit(-1);
-    } else {
-        close(pfds[1]);
-        *prev_pfd = pfds[0]; // save read end;
-        wait(&status);
-    }
-    return status;
-}
-
-// TODO: allow redirections that precede pipes
-// execute a command and either redirect a file to its STDIN
-// or redirect its STDOUT to a file
-int execute_redirect(char *argv[], int *prev_pfd, char *fp, enum Operator op) {
-    int status;
-    printf("*** REDIRECT ***\n");
-
-    pid_t pid = fork();
-    if (pid < 0) {
-        perror("fork failed");
-        exit(-1);
-    } else if (pid == 0) {
-        if (op == REDIRECT_STDOUT) {
-            if (prev_pfd != STDIN_FILENO) {
-                dup2(*prev_pfd, STDIN_FILENO); // previous pipe -> stdin
-                close(*prev_pfd);
-            }
-            int fd = open(fp, O_WRONLY | O_TRUNC | O_CREAT, 0644);
+        // redirect STDOUT
+        if (cmd.file_out != NULL) {
+            int fd = open(cmd.file_out, cmd.outfile_mode, 0644);
             if (fd < 0) {
-                perror("error on open: ");
+                perror("open");
+                exit(0);
             }
             dup2(fd, STDOUT_FILENO);
             close(fd);
-        } else if (op == REDIRECT_STDIN) {
-            int fd = open(fp, O_RDONLY);
-            if (fd < 0) {
-                perror("error on open: ");
-            }
-            dup2(fd, STDIN_FILENO);
-            close(fd);
+        } else if (cmd.op == PIPE) {
+            dup2(pfds[1], STDOUT_FILENO); // stdout -> pipe write end
+            close(pfds[0]);
+            close(pfds[1]);
         }
-        execvp(argv[0], argv);
-        perror("error on execvp");
-        exit(-1);
-    } else {
-        wait(&status);
-    }
-    return status;
-}
 
-int execute(char *argv[], int *prev_pfd) {
-    printf("*** EXEC ***\n");
-    int status;
-    pid_t pid = fork();
-    if (pid == 0) {
-        if (prev_pfd != STDIN_FILENO) {
-            dup2(*prev_pfd, STDIN_FILENO); // previous pipe -> stdin
-            close(*prev_pfd);
-        }
-        execvp(argv[0], argv);
-        perror("execvp err");
+        // execute cmd
+        execvp(cmd.args[0], cmd.args);
+        perror("exec err: ");
         exit(0);
     } else {
-        wait(&status);
+        cmd.pid = pid;
+        *prev_pfd = pfds[0]; // save read end of pipe for next process
+        close(pfds[1]);
     }
-    return status;
 }
-
 int main(int argc, char *argv[]) {
     char buf[80];
 
@@ -146,53 +136,29 @@ int main(int argc, char *argv[]) {
         prompt();
         fgets(buf, 80, stdin);
         char *line = buf;
-        size_t tok_count = 0;
-        char **tokens = tokenize(line, &tok_count);
-        enum Operator op = STDOUT;
-        size_t token_idx = 0;
-        int prev_pfd, pfd[2];
-        size_t next_cmd = 0;
-        int prev_status = 0;
+        size_t cmd_count = 0;
+        struct Command cmds[MAX_CMDS];
+        // needs free
+        parse_commands(line, &cmd_count, cmds);
 
-        while (token_idx < tok_count) {
-            printf("token: %s\n", tokens[token_idx]);
-            op = check_ops(tokens[token_idx]);
-            switch (op) {
-            case PIPE:
-                tokens[token_idx] = NULL;
-                printf("tokens: %p, cmd: %p, op: %d\n", tokens,
-                       tokens[next_cmd], op);
-                printf("cmd: %s arg1: %s\n", tokens[next_cmd],
-                       tokens[next_cmd + 1]);
-                prev_status = execute_piped(&tokens[next_cmd], &prev_pfd);
-                next_cmd = token_idx + 1;
-                break;
-            case REDIRECT_STDIN:
-            case REDIRECT_STDOUT:
-                tokens[token_idx] = NULL;
-                char *fp = tokens[token_idx + 1];
-                prev_status =
-                    execute_redirect(&tokens[next_cmd], &prev_pfd, fp, op);
-                next_cmd = token_idx + 2;
-                token_idx++;
-                break;
-            default:
-                break;
-            }
-            token_idx++;
+        // debug
+        /* for (int i = 0; i < cmd_count; i++) { */
+        /*     print_cmd(cmds[i]); */
+        /* } */
+
+        // execute loop
+        int prev_pfd, pfds[cmd_count][2];
+        for (int i = 0; i < cmd_count; i++) {
+            exec_cmd(cmds[i], &prev_pfd, pfds[i]);
         }
-        // execute last command
-        printf("tokens: %p, cmd: %p\n", tokens, tokens[next_cmd]);
-        printf("cmd: %s arg1: %s\n", tokens[next_cmd], tokens[next_cmd + 1]);
-        if (tokens[next_cmd] != NULL) {
-            prev_status = execute(&tokens[next_cmd], &prev_pfd);
+
+        // clean up
+        for (int i = 0; i < cmd_count; i++) {
+            waitpid(cmds[i].pid, &cmds[i].status, 0);
         }
-        if (prev_pfd != STDIN_FILENO) {
-            printf("PREV closed\n");
-            close(prev_pfd);
+        for (int i = 0; i < cmd_count; i++) {
+            close(pfds[i][0]);
         }
-        free(tokens); // can i do this without re mallocing/freeing each loop?
     }
-
     return 0;
 }
