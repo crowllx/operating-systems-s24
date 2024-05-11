@@ -158,6 +158,7 @@ int main(int argc, char *argv[]) {
         }
         for (int i = 0; i < cmd_count; i++) {
             close(pfds[i][0]);
+            free(cmds[i].args);
         }
     }
     return 0;
