@@ -1,5 +1,6 @@
 #include <assert.h>
 #include <fcntl.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -27,6 +28,7 @@ struct Command {
     char *file_in;
     char *file_out;
     int outfile_mode;
+    int read_pfd;
 };
 
 void prompt() { printf(prompt_color bold "\n> " color_end); }
@@ -44,17 +46,25 @@ void print_cmd(struct Command cmd) {
     printf("file out: %s\n", cmd.file_out);
     printf("pid: %d\n", cmd.pid);
 }
-
+char **build_args() {
+    char **args = malloc(sizeof(char *) * MAX_TOKENS);
+    for (size_t i = 0; i < MAX_TOKENS; i++) {
+        args[i] = NULL;
+    }
+    return args;
+}
 void parse_commands(char *line, size_t *count, struct Command *cmds) {
     char *tok = strtok(line, DELIMS);
     while (*count < MAX_CMDS && tok != NULL) {
-        char **args = malloc(sizeof(char *) * MAX_TOKENS);
+        char **args = build_args();
         cmds[*count].args = args;
-        cmds[*count].file_out = NULL;
-        cmds[*count].file_in = NULL;
         cmds[*count].op = EXEC;
-        cmds[*count].outfile_mode = 0;
+        cmds[*count].status = 0;
         cmds[*count].pid = 0;
+        cmds[*count].file_in = NULL;
+        cmds[*count].file_out = NULL;
+        cmds[*count].outfile_mode = 0;
+        cmds[*count].read_pfd = -1;
         size_t i = 0;
         while (tok != NULL && i < MAX_TOKENS) {
             args[i] = tok;
@@ -99,7 +109,7 @@ void exec_cmd(struct Command cmd, int *prev_pfd, int pfds[2]) {
             int fd = open(cmd.file_in, O_RDONLY);
             dup2(fd, STDIN_FILENO);
             close(fd);
-        } else if (*prev_pfd != STDIN_FILENO) {
+        } else if (*prev_pfd > 0) {
             dup2(*prev_pfd, STDIN_FILENO);
             close(*prev_pfd);
         }
@@ -137,6 +147,7 @@ int main(int argc, char *argv[]) {
         fgets(buf, 80, stdin);
         char *line = buf;
         size_t cmd_count = 0;
+        int exit_flag = -1;
         struct Command cmds[MAX_CMDS];
         // needs free
         parse_commands(line, &cmd_count, cmds);
@@ -147,9 +158,16 @@ int main(int argc, char *argv[]) {
         /* } */
 
         // execute loop
-        int prev_pfd, pfds[cmd_count][2];
+        int prev_pfd = -1;
+        int pfds[cmd_count][2];
         for (int i = 0; i < cmd_count; i++) {
-            exec_cmd(cmds[i], &prev_pfd, pfds[i]);
+            pfds[i][0] = pfds[i][1] = 0;
+            cmds[i].read_pfd = prev_pfd;
+            if (strcmp(cmds[i].args[0], "exit") == 0) {
+                exit_flag = 0;
+            } else {
+                exec_cmd(cmds[i], &prev_pfd, pfds[i]);
+            }
         }
 
         // clean up
@@ -157,8 +175,14 @@ int main(int argc, char *argv[]) {
             waitpid(cmds[i].pid, &cmds[i].status, 0);
         }
         for (int i = 0; i < cmd_count; i++) {
-            close(pfds[i][0]);
+            if (fcntl(pfds[i][0], F_GETFL) != -1) {
+                close(pfds[i][0]);
+            }
             free(cmds[i].args);
+        }
+
+        if (exit_flag == 0) {
+            break;
         }
     }
     return 0;
