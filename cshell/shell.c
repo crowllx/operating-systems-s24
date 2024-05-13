@@ -33,18 +33,28 @@ struct Command {
 
 void prompt() { printf(prompt_color bold "\n> " color_end); }
 
-void print_cmd(struct Command cmd) {
+void print_cmd(struct Command *cmd) {
     printf("argv: ");
     size_t i = 0;
-    while (cmd.args[i] != NULL) {
-        printf("%s ", cmd.args[i]);
+    while (cmd->args[i] != NULL) {
+        printf("%s ", cmd->args[i]);
         i++;
     }
-    printf("\nop: %d\n", cmd.op);
-    printf("append: %d\n", cmd.outfile_mode);
-    printf("file in: %s\n", cmd.file_in);
-    printf("file out: %s\n", cmd.file_out);
-    printf("pid: %d\n", cmd.pid);
+    printf("\nop: %d\n", cmd->op);
+    printf("append: %d\n", cmd->outfile_mode);
+    printf("file in: %s\n", cmd->file_in);
+    printf("file out: %s\n", cmd->file_out);
+    printf("pid: %d\n", cmd->pid);
+}
+
+void change_dir(struct Command *cmd) {
+    print_cmd(cmd);
+    char *path = cmd->args[1];
+    printf("path: %s\n", path);
+    if (chdir(path) < 0) {
+        perror("chdir err: ");
+        exit(0);
+    }
 }
 char **build_args() {
     char **args = malloc(sizeof(char *) * MAX_TOKENS);
@@ -91,7 +101,12 @@ void parse_commands(char *line, size_t *count, struct Command *cmds) {
         (*count)++;
     }
 }
-void exec_cmd(struct Command cmd, int *prev_pfd, int pfds[2]) {
+void exec_cmd(struct Command *cmd, int *prev_pfd, int pfds[2]) {
+    if (strcmp(cmd->args[0], "cd") == 0) {
+        // TODO figure out why this causes infinite loop
+        change_dir(cmd);
+        return;
+    }
     int retval = pipe(pfds);
     if (retval < 0) {
         perror("pipe error");
@@ -105,8 +120,8 @@ void exec_cmd(struct Command cmd, int *prev_pfd, int pfds[2]) {
         exit(0);
     } else if (pid == 0) {
         // redirect STDIN, either from file or from previous commands pipe
-        if (cmd.file_in != NULL) {
-            int fd = open(cmd.file_in, O_RDONLY);
+        if (cmd->file_in != NULL) {
+            int fd = open(cmd->file_in, O_RDONLY);
             dup2(fd, STDIN_FILENO);
             close(fd);
         } else if (*prev_pfd > 0) {
@@ -115,26 +130,26 @@ void exec_cmd(struct Command cmd, int *prev_pfd, int pfds[2]) {
         }
 
         // redirect STDOUT
-        if (cmd.file_out != NULL) {
-            int fd = open(cmd.file_out, cmd.outfile_mode, 0644);
+        if (cmd->file_out != NULL) {
+            int fd = open(cmd->file_out, cmd->outfile_mode, 0644);
             if (fd < 0) {
                 perror("open");
                 exit(0);
             }
             dup2(fd, STDOUT_FILENO);
             close(fd);
-        } else if (cmd.op == PIPE) {
+        } else if (cmd->op == PIPE) {
             dup2(pfds[1], STDOUT_FILENO); // stdout -> pipe write end
             close(pfds[0]);
             close(pfds[1]);
         }
 
         // execute cmd
-        execvp(cmd.args[0], cmd.args);
+        execvp(cmd->args[0], cmd->args);
         perror("exec err: ");
         exit(0);
     } else {
-        cmd.pid = pid;
+        cmd->pid = pid;
         *prev_pfd = pfds[0]; // save read end of pipe for next process
         close(pfds[1]);
     }
@@ -153,20 +168,20 @@ int main(int argc, char *argv[]) {
         parse_commands(line, &cmd_count, cmds);
 
         // debug
-        /* for (int i = 0; i < cmd_count; i++) { */
-        /*     print_cmd(cmds[i]); */
-        /* } */
+        for (int i = 0; i < cmd_count; i++) {
+            print_cmd(&cmds[i]);
+        }
 
         // execute loop
         int prev_pfd = -1;
         int pfds[cmd_count][2];
-        for (int i = 0; i < cmd_count; i++) {
+        for (size_t i = 0; i < cmd_count; i++) {
             pfds[i][0] = pfds[i][1] = 0;
             cmds[i].read_pfd = prev_pfd;
             if (strcmp(cmds[i].args[0], "exit") == 0) {
                 exit_flag = 0;
             } else {
-                exec_cmd(cmds[i], &prev_pfd, pfds[i]);
+                exec_cmd(&cmds[i], &prev_pfd, pfds[i]);
             }
         }
 
